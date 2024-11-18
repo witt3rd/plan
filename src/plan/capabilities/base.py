@@ -2,15 +2,19 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, Protocol, Type, TypeVar, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from plan.capabilities.metadata import CapabilityMetadata
 
 # Type variables for input/output typing
-Input = TypeVar("Input", bound=BaseModel)
-Output = TypeVar("Output")
+# Input is contravariant because we want to accept more general input types
+# (if a capability accepts BaseModel, it should also accept any subclass of BaseModel)
+Input = TypeVar("Input", bound=BaseModel, contravariant=True)
+# Output is covariant because we want to allow more specific output types
+# (if a capability promises to return BaseModel, it can return a more specific subclass)
+Output = TypeVar("Output", bound=BaseModel, covariant=True)
 
 
 @runtime_checkable
@@ -127,29 +131,43 @@ class Capability(Generic[Input, Output], ABC):
         """
         pass
 
-    @abstractmethod
+    def _get_input_model(self) -> Type[BaseModel]:
+        """Get or create input validation model"""
+        if not hasattr(self, "_input_model"):
+            self._input_model = create_model(
+                f"{self.metadata.name}Input",
+                **self.metadata.input_schema.to_pydantic_fields(),
+            )
+        return self._input_model
+
+    def _get_output_model(self) -> Type[BaseModel]:
+        """Get or create output validation model"""
+        if not hasattr(self, "_output_model"):
+            self._output_model = create_model(
+                f"{self.metadata.name}Output",
+                **self.metadata.output_schema.to_pydantic_fields(),
+            )
+        return self._output_model
+
     def _validate_input(self, input: Input) -> None:
-        """Validate input against schema
+        """Validate input using schema"""
+        input_model = self._get_input_model()
+        try:
+            validated = input_model(**input.__dict__)
+            return validated
+        except ValidationError as e:
+            raise InputValidationError(str(e))
 
-        Args:
-            input: Input to validate
-
-        Raises:
-            InputValidationError: If validation fails
-        """
-        pass
-
-    @abstractmethod
     def _validate_output(self, output: Any) -> None:
-        """Validate output against schema
-
-        Args:
-            output: Output to validate
-
-        Raises:
-            OutputValidationError: If validation fails
-        """
-        pass
+        """Validate output using schema"""
+        output_model = self._get_output_model()
+        try:
+            validated = output_model(
+                **output if isinstance(output, dict) else {"result": output}
+            )
+            return validated
+        except ValidationError as e:
+            raise OutputValidationError(str(e))
 
     @property
     def metadata(self) -> CapabilityMetadata:

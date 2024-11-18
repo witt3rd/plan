@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Type
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.json_schema import JsonSchemaValue
 
+from plan.capabilities.schema import Schema, convert_dict_to_schema
+
 
 class CapabilityType(str, Enum):
     """Types of capabilities"""
@@ -98,8 +100,8 @@ class CapabilityMetadata(BaseModel):
     description: str
 
     # Schema information
-    input_schema: Dict[str, Any]
-    output_schema: Dict[str, Any]
+    input_schema: Schema
+    output_schema: Schema
     validation_rules: List[str] = Field(default_factory=list)
     openai_schema: Optional[Dict[str, Any]] = None  # Store OpenAI function schema
 
@@ -243,3 +245,11 @@ class CapabilityMetadata(BaseModel):
             if name not in output_fields:
                 raise ValueError(f"Missing output field: {name}")
             # Add type validation
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CapabilityMetadata":
+        """Create metadata from dictionary, converting schemas"""
+        data = data.copy()
+        data["input_schema"] = convert_dict_to_schema(data["input_schema"])
+        data["output_schema"] = convert_dict_to_schema(data["output_schema"])
+        return cls(**data)

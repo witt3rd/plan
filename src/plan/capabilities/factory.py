@@ -28,6 +28,7 @@ from plan.capabilities.metadata import (
 )
 from plan.capabilities.plan import PlanCapability
 from plan.capabilities.registry import CapabilityRegistry
+from plan.capabilities.schema import Schema, SchemaField, SchemaType
 from plan.capabilities.tool import ToolCapability
 from plan.llm.handler import CompletionConfig, PromptHandler
 from plan.llm.templates import TemplateManager
@@ -247,15 +248,41 @@ class CapabilityFactory(CapabilityCreator):
         # Get schema automatically
         schema = get_function_schema(func)
 
+        # Convert function schema to our Schema format
+        input_schema = Schema(
+            fields={
+                name: SchemaField(
+                    type=SchemaType(field_def.get("type", "any").lower()),
+                    description=field_def.get("description", f"Parameter {name}"),
+                    required=field_def.get("required", True),
+                    default=field_def.get("default"),
+                )
+                for name, field_def in schema.get("parameters", {})
+                .get("properties", {})
+                .items()
+            }
+        )
+
+        output_schema = Schema(
+            fields={
+                "result": SchemaField(
+                    type=SchemaType(
+                        schema.get("returns", {}).get("type", "any").lower()
+                    ),
+                    description="Function return value",
+                    required=True,
+                )
+            }
+        )
+
         # Create metadata using schema information
         metadata = CapabilityMetadata(
             name=name,
             type=CapabilityType.TOOL,
             created_at=datetime.now(),
             description=spec.description,
-            input_schema=schema.get("parameters", {}).get("properties", {}),
-            output_schema={"result": schema.get("returns", {"type": "string"})},
-            # Convert string dependencies to DependencyRequirement objects
+            input_schema=input_schema,
+            output_schema=output_schema,
             dependencies=[
                 DependencyRequirement(capability_name=dep)
                 for dep in decision.suggested_dependencies
@@ -264,32 +291,14 @@ class CapabilityFactory(CapabilityCreator):
             else [],
         )
 
-        # Create input model dynamically
-        input_model = create_pydantic_model(
-            f"{name}Input",
-            {
-                name: schema_type
-                for name, schema_type in schema.get("parameters", {})
-                .get("properties", {})
-                .items()
-            },
-        )
-
-        # Create output model dynamically
-        output_model = create_pydantic_model(
-            f"{name}Output", {"result": schema.get("returns", {"type": "string"})}
-        )
-
-        return CapabilityType.TOOL, ToolCapability[input_model, output_model](
-            func, metadata
-        )
+        return CapabilityType.TOOL, ToolCapability(func, metadata)
 
     async def _create_instruction(
         self,
         name: str,
-        required_inputs: list[str],
+        required_inputs: List[str],
         required_output: str,
-        context: dict[str, Any],
+        context: Dict[str, Any],
         decision: CapabilityTypeDecision,
     ) -> Tuple[CapabilityType, InstructionCapability]:
         """Creates a new instruction capability"""
@@ -318,12 +327,34 @@ class CapabilityFactory(CapabilityCreator):
             ),
         )
 
+        # Create schemas for inputs and outputs
+        input_schema = Schema(
+            fields={
+                name: SchemaField(
+                    type=SchemaType.ANY,
+                    description=f"Input {name}",
+                    required=True,
+                )
+                for name in required_inputs
+            }
+        )
+
+        output_schema = Schema(
+            fields={
+                required_output: SchemaField(
+                    type=SchemaType.ANY,
+                    description="Instruction output",
+                    required=True,
+                )
+            }
+        )
+
         metadata = CapabilityMetadata(
             name=name,
             type=CapabilityType.INSTRUCTION,
             description=spec.description,
-            input_schema={name: "Any" for name in required_inputs},
-            output_schema={required_output: "Any"},
+            input_schema=input_schema,
+            output_schema=output_schema,
             dependencies=[
                 DependencyRequirement(capability_name=dep)
                 for dep in decision.suggested_dependencies
@@ -346,13 +377,35 @@ class CapabilityFactory(CapabilityCreator):
         decision: CapabilityTypeDecision,
     ) -> Tuple[CapabilityType, PlanCapability]:
         """Creates a new plan capability"""
+        # Create schemas for inputs and outputs
+        input_schema = Schema(
+            fields={
+                name: SchemaField(
+                    type=SchemaType.ANY,
+                    description=f"Input {name}",
+                    required=True,
+                )
+                for name in required_inputs
+            }
+        )
+
+        output_schema = Schema(
+            fields={
+                required_output: SchemaField(
+                    type=SchemaType.ANY,
+                    description="Plan output",
+                    required=True,
+                )
+            }
+        )
+
         # Create plan metadata
         metadata = CapabilityMetadata(
             name=name,
             type=CapabilityType.PLAN,
             description=f"Plan capability for {name}",
-            input_schema={name: "Any" for name in required_inputs},
-            output_schema={required_output: "Any"},
+            input_schema=input_schema,
+            output_schema=output_schema,
             dependencies=[
                 DependencyRequirement(capability_name=dep)
                 for dep in decision.suggested_dependencies

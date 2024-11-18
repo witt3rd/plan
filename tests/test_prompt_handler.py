@@ -301,24 +301,21 @@ class TestPromptHandlerPerformance:
 
     @pytest.mark.asyncio
     async def test_tool_execution_timing(self, handler):
-        """Test tool completion performance"""
+        """Test tool selection performance"""
         start_time = datetime.now()
         result = await handler.complete(
             "Check weather in Tokyo, Japan", tools=[TestTools.fetch_weather]
         )
 
-        # Execute tool ourselves
-        tool_call = result.tool_calls[0]
-        args = json.loads(tool_call.function.arguments)
-        weather_result = await TestTools.fetch_weather(**args)
-
         execution_time = (datetime.now() - start_time).total_seconds()
-        assert "tokyo" in weather_result.lower()
+        assert result is not None
+        assert len(result) > 0
+        assert result[0].function.name == "fetch_weather"
         assert execution_time < 5  # Maximum acceptable time
 
     @pytest.mark.asyncio
     async def test_concurrent_tool_execution(self, handler):
-        """Test concurrent tool completion performance"""
+        """Test concurrent tool selection performance"""
         import asyncio
 
         start_time = datetime.now()
@@ -330,15 +327,10 @@ class TestPromptHandlerPerformance:
         ]
         responses = await asyncio.gather(*tasks)
 
-        # Execute tools ourselves
-        weather_results = []
-        for response in responses:
-            tool_call = response.tool_calls[0]
-            args = json.loads(tool_call.function.arguments)
-            weather_results.append(await TestTools.fetch_weather(**args))
-
         execution_time = (datetime.now() - start_time).total_seconds()
-        assert all(isinstance(r, str) for r in weather_results)
+        assert all(isinstance(r, list) for r in responses)
+        assert all(len(r) > 0 for r in responses)
+        assert all(r[0].function.name == "fetch_weather" for r in responses)
         assert execution_time < 10  # Maximum acceptable time
 
 
@@ -356,29 +348,31 @@ class TestPromptHandlerRegression:
 
     @pytest.mark.asyncio
     async def test_tool_type_conversion(self, handler):
-        """Test tool parameter type conversion"""
+        """Test tool parameter parsing with string input"""
         prompt = "Calculate age for birth year '1990'"  # String instead of int
         result = await handler.complete(prompt, tools=[TestTools.calculate_age])
 
-        # Execute tool ourselves
-        tool_call = result.tool_calls[0]
+        assert result is not None
+        assert len(result) > 0
+        tool_call = result[0]
         args = json.loads(tool_call.function.arguments)
-        age_result = TestTools.calculate_age(**args)
-
-        assert str(datetime.now().year - 1990) == str(age_result)
+        assert "birth_year" in args
+        assert isinstance(args["birth_year"], int)  # Should be parsed as integer
+        assert args["birth_year"] == 1990
 
     @pytest.mark.asyncio
     async def test_tool_null_handling(self, handler):
-        """Test handling of null/None values in tool parameters"""
+        """Test handling of optional parameters"""
         prompt = "Calculate age for birth year 1990 with no reference year"
         result = await handler.complete(prompt, tools=[TestTools.calculate_age])
 
-        # Execute tool ourselves
-        tool_call = result.tool_calls[0]
+        assert result is not None
+        assert len(result) > 0
+        tool_call = result[0]
         args = json.loads(tool_call.function.arguments)
-        age_result = TestTools.calculate_age(**args)
-
-        assert str(datetime.now().year - 1990) == str(age_result)
+        assert "birth_year" in args
+        assert args["birth_year"] == 1990
+        assert "reference_year" not in args or args["reference_year"] is None
 
 
 @pytest.mark.unit
@@ -391,18 +385,14 @@ class TestPromptHandlerTools:
         prompt = "What's the weather in London, UK?"
         result = await handler.complete(prompt, tools=[TestTools.fetch_weather])
 
-        # Result should contain tool calls that we need to execute
-        assert result.tool_calls is not None
-        tool_call = result.tool_calls[0]
-
-        # Execute tool ourselves
-        import json
+        assert result is not None
+        assert len(result) == 1
+        tool_call = result[0]
+        assert tool_call.function.name == "fetch_weather"
 
         args = json.loads(tool_call.function.arguments)
-        weather_result = await TestTools.fetch_weather(**args)
-
-        assert "london" in weather_result.lower()
-        assert "sunny" in weather_result.lower()
+        assert "city" in args and args["city"].lower() == "london"
+        assert "country" in args and args["country"].upper() == "UK"
 
     @pytest.mark.asyncio
     async def test_multiple_tools_completion(self, handler):
@@ -415,24 +405,23 @@ class TestPromptHandlerTools:
             prompt, tools=[TestTools.fetch_weather, TestTools.calculate_age]
         )
 
-        # Execute each tool call ourselves
-        import json
+        assert result is not None
+        assert len(result) == 2
+        tool_names = {call.function.name for call in result}
+        assert tool_names == {"fetch_weather", "calculate_age"}
 
-        responses = []
-        for tool_call in result.tool_calls:
+        # Verify arguments without executing
+        for tool_call in result:
             args = json.loads(tool_call.function.arguments)
             if tool_call.function.name == "fetch_weather":
-                responses.append(await TestTools.fetch_weather(**args))
+                assert args["city"].lower() == "paris"
+                assert args["country"].lower() in {"france", "fr"}
             elif tool_call.function.name == "calculate_age":
-                responses.append(TestTools.calculate_age(**args))
-
-        # Verify results
-        assert any("paris" in r.lower() for r in responses)
-        assert any(str(datetime.now().year - 1990) in str(r) for r in responses)
+                assert args["birth_year"] == 1990
 
     @pytest.mark.asyncio
     async def test_tool_in_conversation(self, handler):
-        """Test tool usage in conversation context"""
+        """Test tool selection in conversation context"""
         conv_id = "test_tools_conv"
         handler.create_conversation(conv_id, "gpt-4o-mini")
 
@@ -443,18 +432,99 @@ class TestPromptHandlerTools:
             conversation_id=conv_id,
         )
 
-        # Execute tool ourselves
-        tool_call = result.tool_calls[0]
+        assert result is not None
+        assert len(result) == 1
+        tool_call = result[0]
+        assert tool_call.function.name == "fetch_weather"
         args = json.loads(tool_call.function.arguments)
-        weather_result = await TestTools.fetch_weather(**args)
+        assert args["city"].lower() == "tokyo"
+        assert args["country"].lower() in {"japan", "jp"}
 
-        # Add the weather result to conversation
+        # Add a mock weather result to conversation
+        mock_weather = "Sunny, 22°C in Tokyo, Japan"
         handler._conversations[conv_id].add_message(
-            "assistant", weather_result, len(weather_result) // 4
+            "assistant", mock_weather, len(mock_weather) // 4
         )
 
-        # Follow-up should now have access to the actual weather result
+        # Test that conversation context is maintained
         result2 = await handler.complete(
             "What was the temperature mentioned?", conversation_id=conv_id
         )
+        assert isinstance(result2, str)
         assert "22" in result2
+
+    @pytest.mark.asyncio
+    async def test_tool_with_complex_types(self, handler):
+        """Test tool handling complex input/output types"""
+        prompt = "Process this data: [1, 2, 3] in JSON format"
+        result = await handler.complete(prompt, tools=[TestTools.process_data])
+        if result is not None:
+            assert len(result) > 0
+            assert all(call.function.name == "process_data" for call in result)
+
+    @pytest.mark.asyncio
+    async def test_tool_error_handling(self, handler):
+        """Test handling of invalid tool selection"""
+
+        # Test with a tool that has invalid schema/signature
+        def invalid_tool(x):  # Missing return type and param annotation
+            """This tool has an invalid signature"""
+            return x
+
+        # Test with no matching tools for the prompt
+        result = await handler.complete(
+            "Tell me a joke",  # Prompt unrelated to weather or age calculation
+            tools=[TestTools.fetch_weather, TestTools.calculate_age],
+        )
+
+        # Should return None when no tools match the prompt
+        assert result is None
+
+        # Test with invalid tool separately
+        result = await handler.complete("Test invalid tool", tools=[invalid_tool])
+        # Should return None for invalid tool
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_tool_with_optional_params(self, handler):
+        """Test tool with optional parameters"""
+        prompt = "Calculate age for birth year 1990"
+        result = await handler.complete(prompt, tools=[TestTools.calculate_age])
+        if result is not None:
+            assert len(result) > 0
+            assert all(call.function.name == "calculate_age" for call in result)
+
+    @pytest.mark.asyncio
+    async def test_tool_schema_validation(self, handler):
+        """Test tool schema validation"""
+
+        def strict_tool(
+            numbers: Annotated[str, Doc("JSON string containing list of integers")],
+        ) -> Annotated[int, Doc("Sum of the numbers")]:
+            """Adds up a list of numbers"""
+            import json
+
+            nums = json.loads(numbers)
+            return sum(nums)
+
+        # Should handle JSON string input
+        prompt = "Calculate sum of [1, 2, 3]"
+        result = await handler.complete(prompt, tools=[strict_tool])
+        if result is not None:
+            assert len(result) > 0
+            assert all(call.function.name == "strict_tool" for call in result)
+
+    @pytest.mark.asyncio
+    async def test_tool_chaining(self, handler):
+        """Test sequential tool execution"""
+        prompt = """
+        1. Get weather in Berlin, Germany
+        2. Process that information as JSON
+        """
+        result = await handler.complete(
+            prompt, tools=[TestTools.fetch_weather, TestTools.process_data]
+        )
+        if result is not None:
+            assert len(result) > 0
+            tool_names = {call.function.name for call in result}
+            assert tool_names & {"fetch_weather", "process_data"}

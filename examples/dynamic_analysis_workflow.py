@@ -16,44 +16,12 @@ from typing import Any, Dict
 from plan.capabilities.factory import CapabilityFactory
 from plan.capabilities.metadata import CapabilityMetadata, CapabilityType
 from plan.capabilities.registry import CapabilityRegistry
+from plan.capabilities.schema import Schema, SchemaField, SchemaType
 from plan.capabilities.tool import ToolCapability
 from plan.llm.handler import PromptHandler
 from plan.planning.executor import PlanExecutor
 from plan.planning.planner import Planner
 from plan.visualization import visualize_plan
-
-
-# Basic data processing tools
-def load_dataset(source: str) -> Dict[str, Any]:
-    """Loads data from a source"""
-    return {
-        "data": f"Data loaded from {source}",
-        "timestamp": datetime.now(),
-    }
-
-
-def validate_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Validates data structure and content"""
-    return {
-        "valid": True,
-        "data": data["data"],
-        "validation_timestamp": datetime.now(),
-    }
-
-
-def analyze_trends(
-    data: Dict[str, Any], analysis_type: str = "basic"
-) -> Dict[str, Any]:
-    """Analyzes trends in the data"""
-    return {
-        "trends": f"Trends analyzed from {data['data']} using {analysis_type} analysis",
-        "analysis_timestamp": datetime.now(),
-    }
-
-
-def generate_report(analysis_results: Dict[str, Any], format: str = "pdf") -> str:
-    """Generates a report from analysis results"""
-    return f"Report generated in {format} format: {analysis_results['trends']}"
 
 
 async def dynamic_analysis_workflow():
@@ -64,7 +32,7 @@ async def dynamic_analysis_workflow():
     registry = CapabilityRegistry()
     factory = CapabilityFactory(prompt_handler, registry)
 
-    # Basic data processing tools
+    # 2. Register data processing capabilities
     def load_dataset(source: str) -> Dict[str, Any]:
         """Loads data from a source"""
         return {
@@ -81,23 +49,36 @@ async def dynamic_analysis_workflow():
                 type=CapabilityType.TOOL,
                 created_at=datetime.now(),
                 description="Loads data from specified source",
-                input_schema={
-                    "source": {
-                        "type": "string",
-                        "description": "Data source identifier",
-                        "required": True,
+                input_schema=Schema(
+                    fields={
+                        "source": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Data source identifier",
+                            required=True,
+                        )
                     }
-                },
-                output_schema={
-                    "data": {
-                        "type": "object",
-                        "description": "Loaded data with metadata",
+                ),
+                output_schema=Schema(
+                    fields={
+                        "data": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Loaded data with metadata",
+                            required=True,
+                        )
                     }
-                },
+                ),
                 tags=["data", "input", "loader"],
             ),
         ),
     )
+
+    def validate_data(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validates data structure and content"""
+        return {
+            "valid": True,
+            "data": data["data"],
+            "validation_timestamp": datetime.now(),
+        }
 
     registry.register(
         "validate_data",
@@ -108,21 +89,42 @@ async def dynamic_analysis_workflow():
                 type=CapabilityType.TOOL,
                 created_at=datetime.now(),
                 description="Validates data structure and content",
-                input_schema={
-                    "data": {
-                        "type": "object",
-                        "description": "Data to validate",
-                        "required": True,
+                input_schema=Schema(
+                    fields={
+                        "data": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Data to validate",
+                            required=True,
+                        )
                     }
-                },
-                output_schema={
-                    "valid": {"type": "boolean", "description": "Validation result"},
-                    "data": {"type": "object", "description": "Validated data"},
-                },
+                ),
+                output_schema=Schema(
+                    fields={
+                        "valid": SchemaField(
+                            type=SchemaType.BOOLEAN,
+                            description="Validation result",
+                            required=True,
+                        ),
+                        "data": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Validated data",
+                            required=True,
+                        ),
+                    }
+                ),
                 tags=["data", "validation"],
             ),
         ),
     )
+
+    def analyze_trends(
+        data: Dict[str, Any], analysis_type: str = "basic"
+    ) -> Dict[str, Any]:
+        """Analyzes trends in the data"""
+        return {
+            "trends": f"Trends analyzed from {data['data']} using {analysis_type} analysis",
+            "analysis_timestamp": datetime.now(),
+        }
 
     registry.register(
         "analyze_trends",
@@ -133,26 +135,38 @@ async def dynamic_analysis_workflow():
                 type=CapabilityType.TOOL,
                 created_at=datetime.now(),
                 description="Analyzes trends in the validated data",
-                input_schema={
-                    "data": {
-                        "type": "object",
-                        "description": "Validated data to analyze",
-                        "required": True,
-                    },
-                    "analysis_type": {
-                        "type": "string",
-                        "description": "Type of analysis to perform",
-                        "required": False,
-                        "default": "basic",
-                    },
-                },
-                output_schema={
-                    "trends": {"type": "object", "description": "Analysis results"}
-                },
+                input_schema=Schema(
+                    fields={
+                        "data": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Validated data to analyze",
+                            required=True,
+                        ),
+                        "analysis_type": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Type of analysis to perform",
+                            required=False,
+                            default="basic",
+                        ),
+                    }
+                ),
+                output_schema=Schema(
+                    fields={
+                        "trends": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Analysis results",
+                            required=True,
+                        )
+                    }
+                ),
                 tags=["analysis", "trends"],
             ),
         ),
     )
+
+    def generate_report(analysis_results: Dict[str, Any], format: str = "pdf") -> str:
+        """Generates a report from analysis results"""
+        return f"Report generated in {format} format: {analysis_results['trends']}"
 
     registry.register(
         "generate_report",
@@ -163,26 +177,35 @@ async def dynamic_analysis_workflow():
                 type=CapabilityType.TOOL,
                 created_at=datetime.now(),
                 description="Generates a report from analysis results",
-                input_schema={
-                    "analysis_results": {
-                        "type": "object",
-                        "description": "Analysis results to include in report",
-                        "required": True,
-                    },
-                    "format": {
-                        "type": "string",
-                        "description": "Output format",
-                        "required": False,
-                        "default": "pdf",
-                    },
-                },
-                output_schema={
-                    "report": {"type": "string", "description": "Generated report"}
-                },
+                input_schema=Schema(
+                    fields={
+                        "analysis_results": SchemaField(
+                            type=SchemaType.OBJECT,
+                            description="Analysis results to include in report",
+                            required=True,
+                        ),
+                        "format": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Output format",
+                            required=False,
+                            default="pdf",
+                        ),
+                    }
+                ),
+                output_schema=Schema(
+                    fields={
+                        "report": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Generated report",
+                            required=True,
+                        )
+                    }
+                ),
                 tags=["report", "output"],
             ),
         ),
     )
+
     # 3. Create planner and executor
     planner = Planner(registry, factory, prompt_handler)
     executor = PlanExecutor(registry)

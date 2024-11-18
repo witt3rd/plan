@@ -24,14 +24,17 @@ Improvements:
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from openai import AsyncOpenAI
 from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
+    ChatCompletionMessageToolCall,
     ChatCompletionToolParam,
+    ChatCompletionUserMessageParam,
 )
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from plan.llm.tool import (
     get_chat_completion_tool_param,
@@ -100,7 +103,7 @@ class CompletionConfig(BaseModel):
 class ConversationContext(BaseModel):
     """Context for maintaining conversation history"""
 
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    messages: List[ChatCompletionMessageParam] = Field(default_factory=list)
     total_tokens: int = Field(default=0)
     max_tokens: int = Field(default=4096)
     model: str
@@ -118,7 +121,12 @@ class ConversationContext(BaseModel):
             # Estimate tokens for removed message
             self.total_tokens -= len(str(removed)) // 4
 
-        self.messages.append({"role": role, "content": content})
+        message = (
+            ChatCompletionUserMessageParam(role="user", content=content)
+            if role == "user"
+            else ChatCompletionAssistantMessageParam(role="assistant", content=content)
+        )
+        self.messages.append(message)
         self.total_tokens += tokens
 
 
@@ -160,7 +168,7 @@ class PromptHandler:
         prompt: str,
         *,
         config: Optional[CompletionConfig] = None,
-        tools: Optional[List[callable]] = None,
+        tools: Optional[List[Callable]] = None,
         conversation_id: Optional[str] = None,
     ) -> Any:
         """Execute a completion request"""
@@ -231,15 +239,19 @@ class PromptHandler:
         self,
         messages: List[ChatCompletionMessageParam],
         config: CompletionConfig,
-        tools: List[callable],
-    ) -> Any:
-        """Handle tool-based completion"""
-        tool_schemas = [get_chat_completion_tool_param(func) for func in tools]
+        tools: List[Callable],
+    ) -> Optional[List[ChatCompletionMessageToolCall]]:
+        """Handle tool-based completion
 
+        Returns:
+            List of tool calls if finish_reason is 'tool_calls', None otherwise
+        """
+        tool_schemas = [get_chat_completion_tool_param(func) for func in tools]
         response = await self._execute_completion(messages, config, tools=tool_schemas)
 
-        # Return the message which contains tool_calls
-        return response.choices[0].message
+        if response.choices[0].finish_reason == "tool_calls":
+            return response.choices[0].message.tool_calls
+        return None
 
     async def _execute_structured_completion(
         self,
@@ -279,7 +291,7 @@ class PromptHandler:
 
     async def _build_messages(
         self, prompt: str, config: CompletionConfig, conversation_id: Optional[str]
-    ) -> List[Dict[str, Any]]:
+    ) -> List[ChatCompletionMessageParam]:
         """Build message list for completion
 
         Args:
@@ -290,7 +302,7 @@ class PromptHandler:
         Returns:
             List of messages
         """
-        messages: List[Dict[str, Any]] = []
+        messages: List[ChatCompletionMessageParam] = []
 
         # Add system message if provided
         if config.system_message:

@@ -11,10 +11,11 @@ import asyncio
 from datetime import datetime
 
 from plan.capabilities.metadata import CapabilityMetadata, CapabilityType
+from plan.capabilities.orchestrator import CapabilityOrchestrator
 from plan.capabilities.registry import CapabilityRegistry
+from plan.capabilities.schema import Schema, SchemaField, SchemaType
 from plan.capabilities.tool import ToolCapability
 from plan.llm.handler import PromptHandler
-from plan.orchestration.orchestrator import CapabilityOrchestrator
 
 
 async def basic_workflow_example():
@@ -40,7 +41,7 @@ async def basic_workflow_example():
         """Generates a response based on request and sentiment"""
         return f"Thank you for your request. Based on your {sentiment} message: {request_text}"
 
-    # Register capabilities with metadata
+    # Register capabilities with metadata using new schema system
     registry.register(
         "get_project_request",
         ToolCapability(
@@ -48,10 +49,93 @@ async def basic_workflow_example():
             CapabilityMetadata(
                 name="get_project_request",
                 type=CapabilityType.TOOL,
-                created_at=datetime.now().isoformat(),
+                created_at=datetime.now(),
                 description="Retrieves project request details",
-                input_schema={"project_id": "string"},
-                output_schema={"result": "string"},
+                input_schema=Schema(
+                    fields={
+                        "project_id": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Project identifier",
+                            required=True,
+                        )
+                    }
+                ),
+                output_schema=Schema(
+                    fields={
+                        "result": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Project request details",
+                            required=True,
+                        )
+                    }
+                ),
+            ),
+        ),
+    )
+
+    registry.register(
+        "analyze_sentiment",
+        ToolCapability(
+            analyze_sentiment,
+            CapabilityMetadata(
+                name="analyze_sentiment",
+                type=CapabilityType.TOOL,
+                created_at=datetime.now(),
+                description="Analyzes text sentiment",
+                input_schema=Schema(
+                    fields={
+                        "text": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Text to analyze",
+                            required=True,
+                        )
+                    }
+                ),
+                output_schema=Schema(
+                    fields={
+                        "result": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Sentiment analysis result",
+                            required=True,
+                        )
+                    }
+                ),
+            ),
+        ),
+    )
+
+    registry.register(
+        "generate_response",
+        ToolCapability(
+            generate_response,
+            CapabilityMetadata(
+                name="generate_response",
+                type=CapabilityType.TOOL,
+                created_at=datetime.now(),
+                description="Generates a response based on request and sentiment",
+                input_schema=Schema(
+                    fields={
+                        "request_text": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Original request text",
+                            required=True,
+                        ),
+                        "sentiment": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Analyzed sentiment",
+                            required=True,
+                        ),
+                    }
+                ),
+                output_schema=Schema(
+                    fields={
+                        "result": SchemaField(
+                            type=SchemaType.STRING,
+                            description="Generated response",
+                            required=True,
+                        )
+                    }
+                ),
             ),
         ),
     )

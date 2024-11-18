@@ -15,6 +15,7 @@ from plan.capabilities.base import (
     Output,
 )
 from plan.capabilities.metadata import CapabilityMetadata
+from plan.capabilities.schema import Schema, SchemaField, SchemaType
 from plan.llm.handler import CompletionConfig, PromptHandler
 from plan.llm.templates import TemplateManager
 
@@ -68,13 +69,17 @@ class InstructionCapability(Capability[Input, Output]):
             }
 
             # Verify all required inputs are in template
-            required_inputs = set(self.metadata.input_schema.keys())
+            required_inputs = {
+                name
+                for name, field in self.metadata.input_schema.fields.items()
+                if field.required
+            }
             missing_inputs = required_inputs - template_vars
             if missing_inputs:
                 raise ValueError(f"Template missing required inputs: {missing_inputs}")
 
             # Verify no extra variables
-            extra_vars = template_vars - required_inputs
+            extra_vars = template_vars - set(self.metadata.input_schema.fields.keys())
             if extra_vars:
                 raise ValueError(f"Template contains unknown variables: {extra_vars}")
 
@@ -110,7 +115,9 @@ class InstructionCapability(Capability[Input, Output]):
             for attempt in range(self._instruction_metadata.retry_count):
                 try:
                     result = await self._prompt_handler.complete(prompt, config=config)
-                    return Output(result)
+                    # Create output model instance
+                    output_model = self._get_output_model()
+                    return output_model(result=result)
 
                 except Exception as e:
                     if attempt == self._instruction_metadata.retry_count - 1:
@@ -119,9 +126,6 @@ class InstructionCapability(Capability[Input, Output]):
                         ) from e
                     # Exponential backoff
                     await asyncio.sleep(2**attempt)
-
-            # Return empty output if all retries fail
-            return Output()
 
         except ValidationError as e:
             raise InputValidationError(f"Input validation failed: {str(e)}")
@@ -150,3 +154,49 @@ class InstructionCapability(Capability[Input, Output]):
     def instruction_metadata(self) -> InstructionMetadata:
         """Get instruction-specific metadata"""
         return self._instruction_metadata
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        template: str,
+        input_fields: Dict[str, Dict[str, Any]],
+        output_fields: Dict[str, Dict[str, Any]],
+        prompt_handler: PromptHandler,
+        description: str = "",
+    ) -> "InstructionCapability":
+        """Create a new instruction capability with schema validation"""
+        # Convert field definitions to Schema objects
+        input_schema = Schema(
+            fields={
+                name: SchemaField(
+                    type=SchemaType(field_def.get("type", "string").lower()),
+                    description=field_def.get("description", f"Input {name}"),
+                    required=field_def.get("required", True),
+                    default=field_def.get("default"),
+                    validation_rules=field_def.get("validation_rules", []),
+                )
+                for name, field_def in input_fields.items()
+            }
+        )
+
+        output_schema = Schema(
+            fields={
+                name: SchemaField(
+                    type=SchemaType(field_def.get("type", "string").lower()),
+                    description=field_def.get("description", f"Output {name}"),
+                    required=field_def.get("required", True),
+                )
+                for name, field_def in output_fields.items()
+            }
+        )
+
+        metadata = CapabilityMetadata(
+            name=name,
+            type=CapabilityType.INSTRUCTION,
+            description=description,
+            input_schema=input_schema,
+            output_schema=output_schema,
+        )
+
+        return cls(template, metadata, prompt_handler)

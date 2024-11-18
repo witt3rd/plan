@@ -1,27 +1,9 @@
-"""Tool capability implementation
-
-Improvements:
-- Added input/output validation using Pydantic models
-- Enhanced error handling with specific exception types
-- Added support for function signature validation
-- Implemented retry logic with exponential backoff
-- Added support for async functions
-- Included function profiling and performance tracking
-- Added support for function timeouts
-- Implemented parameter type checking and coercion
-- Added function documentation extraction
-- Included test case execution and validation
-- Added support for function mocking in test mode
-- Implemented resource usage tracking
-- Added support for function versioning
-- Included function result caching with TTL
-"""
+"""Tool capability implementation"""
 
 import asyncio
 import inspect
 import time
 from datetime import UTC, datetime
-from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -85,17 +67,7 @@ class ToolCapability(Capability[Input, Output]):
         retry_delay: float = 1.0,
         max_concurrent: Optional[int] = None,
     ):
-        """Initialize the tool capability
-
-        Args:
-            func: The function to execute
-            metadata: Capability metadata
-            cache_ttl: Optional cache time-to-live in seconds
-            max_retries: Maximum number of retry attempts
-            timeout: Optional execution timeout in seconds
-            retry_delay: Base delay between retries (will use exponential backoff)
-            max_concurrent: Maximum number of concurrent executions
-        """
+        """Initialize the tool capability"""
         super().__init__(metadata)
         self._validate_function(func)
         self._func = func
@@ -106,17 +78,9 @@ class ToolCapability(Capability[Input, Output]):
         self._stats = FunctionStats()
         self._cache: Dict[str, CachedResult] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent if max_concurrent else 100)
-        self._execution_lock = asyncio.Lock()
 
     def _validate_function(self, func: Callable[..., Any]) -> None:
-        """Validate function signature against metadata
-
-        Args:
-            func: Function to validate
-
-        Raises:
-            ValueError: If validation fails
-        """
+        """Validate function signature against metadata schema"""
         sig = inspect.signature(func)
 
         # Get required parameters from function
@@ -129,8 +93,8 @@ class ToolCapability(Capability[Input, Output]):
         # Get required parameters from schema
         schema_required = {
             name
-            for name, schema in self.metadata.input_schema.items()
-            if schema.get("required", True)
+            for name, field in self.metadata.input_schema.fields.items()
+            if field.required
         }
 
         # Check if required parameters match
@@ -138,67 +102,6 @@ class ToolCapability(Capability[Input, Output]):
             raise ValueError(
                 f"Function required parameters {required_params} don't match schema required parameters {schema_required}"
             )
-
-    def _create_wrapper(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        """Create a wrapped version of the function with profiling
-
-        Args:
-            func: Function to wrap
-
-        Returns:
-            Wrapped function
-        """
-
-        @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            start_time = time.time()
-            self._stats.total_calls += 1
-
-            try:
-                # Check cache first
-                cache_key = self._get_cache_key(args, kwargs)
-                if cached := self._get_cached_result(cache_key):
-                    self._stats.cache_hits += 1
-                    return cached
-
-                self._stats.cache_misses += 1
-
-                # Execute with retry logic
-                for attempt in range(self._max_retries):
-                    try:
-                        # Handle both sync and async functions
-                        if inspect.iscoroutinefunction(func):
-                            result = await func(*args, **kwargs)
-                        else:
-                            result = func(*args, **kwargs)
-
-                        # Cache result if enabled
-                        if self._cache_ttl:
-                            self._cache[cache_key] = CachedResult(
-                                value=result, ttl=self._cache_ttl
-                            )
-
-                        return result
-
-                    except Exception:
-                        if attempt == self._max_retries - 1:
-                            raise
-                        self._stats.retry_count += 1
-                        await asyncio.sleep(2**attempt)
-
-            except asyncio.TimeoutError:
-                self._stats.timeout_count += 1
-                raise CapabilityExecutionError("Execution timed out")
-
-            except Exception as e:
-                self._stats.failed_calls += 1
-                raise CapabilityExecutionError(f"Execution failed: {str(e)}") from e
-
-            finally:
-                execution_time = time.time() - start_time
-                self._update_stats(execution_time)
-
-        return wrapper
 
     async def _execute_impl(self, input: Input) -> Output:
         """Execute the tool function with full error handling and retries"""
@@ -226,9 +129,6 @@ class ToolCapability(Capability[Input, Output]):
                             )
                         else:
                             result = await self._execute_function(input.__dict__)
-
-                        # Validate output
-                        self._validate_output(result)
 
                         # Update stats and cache on success
                         execution_time = time.time() - start_time
@@ -270,7 +170,6 @@ class ToolCapability(Capability[Input, Output]):
                 result = await self._func(**input)
             else:
                 # Run sync functions in thread pool to avoid blocking
-                # Create a lambda to handle keyword arguments
                 def execute_func():
                     return self._func(**input)
 
@@ -302,12 +201,7 @@ class ToolCapability(Capability[Input, Output]):
         return process.memory_info().rss
 
     def _record_resource_usage(self, cpu_time: float, memory_delta: float) -> None:
-        """Record resource usage statistics
-
-        Args:
-            cpu_time: Time taken for execution in seconds
-            memory_delta: Change in memory usage in bytes
-        """
+        """Record resource usage statistics"""
         # Update CPU time statistics
         self._stats.total_cpu_time += cpu_time
 
@@ -315,99 +209,17 @@ class ToolCapability(Capability[Input, Output]):
         self._stats.total_memory_delta += memory_delta
         self._stats.peak_memory_delta = max(self._stats.peak_memory_delta, memory_delta)
 
-        # Calculate average only if we have successful calls
         if self._stats.successful_calls > 0:
             self._stats.average_memory_delta = (
                 self._stats.total_memory_delta / self._stats.successful_calls
             )
-        else:
-            self._stats.average_memory_delta = 0.0
-
-    def _validate_input(self, input: Input) -> None:
-        """Validate input against schema"""
-        try:
-            # Verify all required inputs are present
-            required_inputs = set(
-                name
-                for name, schema in self.metadata.input_schema.items()
-                if schema.get("required", True)
-            )
-            missing_inputs = required_inputs - set(input.__dict__.keys())
-            if missing_inputs:
-                raise InputValidationError(f"Missing required inputs: {missing_inputs}")
-
-            # Validate input types
-            for name, value in input.__dict__.items():
-                if name not in self.metadata.input_schema:
-                    raise InputValidationError(f"Unknown input: {name}")
-
-                schema = self.metadata.input_schema[name]
-                expected_type = schema.get("type")
-                if expected_type and not isinstance(value, eval(expected_type)):
-                    raise InputValidationError(
-                        f"Input '{name}' has wrong type. Expected {expected_type}, got {type(value)}"
-                    )
-
-        except Exception as e:
-            if not isinstance(e, InputValidationError):
-                raise InputValidationError(f"Input validation failed: {str(e)}")
-            raise
-
-    def _validate_output(self, output: Any) -> None:
-        """Validate output against schema"""
-        try:
-            schema = self.metadata.output_schema
-            if not schema:
-                return
-
-            # Type validation
-            expected_type = schema.get("type")
-            if expected_type and not isinstance(output, eval(expected_type)):
-                raise OutputValidationError(
-                    f"Output has wrong type. Expected {expected_type}, got {type(output)}"
-                )
-
-            # Format validation
-            if "format" in schema:
-                # Add format validation logic here
-                pass
-
-            # Range validation
-            if "minimum" in schema and output < schema["minimum"]:
-                raise OutputValidationError(
-                    f"Output below minimum: {schema['minimum']}"
-                )
-            if "maximum" in schema and output > schema["maximum"]:
-                raise OutputValidationError(
-                    f"Output above maximum: {schema['maximum']}"
-                )
-
-        except Exception as e:
-            if not isinstance(e, OutputValidationError):
-                raise OutputValidationError(f"Output validation failed: {str(e)}")
-            raise
 
     def _get_cache_key(self, args: tuple, kwargs: dict) -> str:
-        """Generate cache key from function arguments
-
-        Args:
-            args: Positional arguments
-            kwargs: Keyword arguments
-
-        Returns:
-            Cache key string
-        """
+        """Generate cache key from function arguments"""
         return f"{args}:{kwargs}"
 
     def _get_cached_result(self, key: str) -> Optional[Any]:
-        """Get cached result if valid
-
-        Args:
-            key: Cache key
-
-        Returns:
-            Cached value if valid, None otherwise
-        """
+        """Get cached result if valid"""
         if cached := self._cache.get(key):
             if (datetime.now(UTC) - cached.timestamp).total_seconds() < cached.ttl:
                 return cached.value
@@ -415,20 +227,12 @@ class ToolCapability(Capability[Input, Output]):
         return None
 
     def _update_stats(self, execution_time: float) -> None:
-        """Update execution statistics
-
-        Args:
-            execution_time: Time taken for execution
-        """
+        """Update execution statistics"""
         stats = self._stats
         stats.total_execution_time += execution_time
         stats.successful_calls += 1
         stats.total_calls += 1
-
-        # Now we can safely calculate the average
         stats.average_execution_time = stats.total_execution_time / stats.total_calls
-
-        # Update min/max execution times
         stats.min_execution_time = min(stats.min_execution_time, execution_time)
         stats.max_execution_time = max(stats.max_execution_time, execution_time)
         stats.last_execution_time = datetime.now(UTC)
@@ -444,26 +248,7 @@ class ToolCapability(Capability[Input, Output]):
 
     @property
     def schema(self) -> FunctionSchema:
-        """Get OpenAI function schema for this tool
-
-        Returns:
-            FunctionSchema containing the function's interface definition
-        """
+        """Get OpenAI function schema for this tool"""
         return build_function_schema(
-            self._func, self.metadata.name, self.metadata.input_schema
+            self._func, self.metadata.name, self.metadata.input_schema.fields
         )
-
-    async def execute(self, input: Input) -> Output:
-        """Execute the tool capability with the given input
-
-        Args:
-            input: The input values for the function
-
-        Returns:
-            The function output after validation
-
-        Raises:
-            CapabilityExecutionError: If execution fails
-            InputValidationError: If input validation fails
-        """
-        return await self._execute_impl(input)
